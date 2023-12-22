@@ -38,8 +38,7 @@ def create_app(config: ServiceConfig) -> FastAPI:
     app = FastAPI(debug=False)
 
     app.state.encoder = load_encoder()
-    app.state.ann = load_ann_models()
-
+    app.state.ann = load_ann_models(config.models_path)
     app.state.db_engine = create_engine(config.db_path)
 
     add_views(app)

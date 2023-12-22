@@ -1,102 +1,95 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, FastAPI, Request
-from fastapi.security import HTTPBearer
+from fastapi import APIRouter, FastAPI, Request
 from pydantic import BaseModel
 from ..utils import get_from_db
 from ..db_classes import Vacancies, Resumes
 
-from service.api.exceptions import ModelNotFoundError, UserNotFoundError, WrongTokenError
-from service.log import app_logger
-import numpy as np
+import pandas as pd
 
 
-class RecoResponse(BaseModel):
-    user_id: int
-    items: List[int]
-
-
-class RecruterResponce():
-    pass
-
-class WorkerResponce():
-    pass
+class Responce(BaseModel):
+    results: List[dict]
 
 router = APIRouter()
-# bearer = HTTPBearer()
 
-@router.get(
-    path="/health",
-    tags=["Health"],
-)
+
+@router.get(path="/health")
 async def health() -> str:
     return "I am alive"
 
 
-# @router.get(
-#     path="/{model_name}/{user_id}",
-#     response_model=RecoResponse
-# )
-# async def get_reco(request: Request, model_name: str, user_id: int, token: str = Depends(bearer)) -> RecoResponse:
-#     app_logger.info(f"Request for model: {model_name}, user_id: {user_id}")
-
-#     k_recs = request.app.state.k_recs
-#     models = request.app.state.models
-#     true_token = request.app.state.true_token
-
-#     auth_token = token.credentials
-
-#     if auth_token != true_token:
-#         raise WrongTokenError()
-
-#     if user_id > 10**9:
-#         raise UserNotFoundError(error_message=f"User {user_id} not found")
-
-#     if model_name not in request.app.state.models:
-#         raise ModelNotFoundError(error_message=f"Model {model_name} not found")
-
-#     reco = models[model_name].get_reco(user_id, k_recs)
-
-#     return RecoResponse(user_id=user_id, items=reco)
-
-@router.post(path="/get_vacancies")
-async def recomend_vacancies(request: Request):
+@router.post(path="/get_vacancies", response_model=Responce)
+async def recomend_vacancies(request: Request) -> Responce:
     data = await request.json()
 
     encoder = request.app.state.encoder
     ann = request.app.state.ann
 
-    embedding = encoder.encode(data['description'], normalize_embeddings=True)
+    all_text = f"{data['vacancy']} {data['city_name']} {data['description']}"
+
+    embedding = encoder.encode(all_text, normalize_embeddings=True)
     vacancy_ids, _ = ann['vacanсies'].knnQuery(embedding, k=5)
     vacancy_ids = vacancy_ids.tolist()
 
     results = get_from_db(request.app.state.db_engine, vacancy_ids, Vacancies)
 
-    results_list = [(result.custom_position, result.experience, result.salary, result.city_name)
-                    for result in results]
+    results_list = [
+        {'custom_position': result.custom_position,
+         'experience': result.experience,
+         'salary': result.salary,
+         'city_name': result.city_name,
+        }
+        for result in results
+    ]
 
-    # print(type(vacancy_ids))
-    # print(vacancy_ids)
-    # print(len(results))
-    # # return 0
+    results_df = pd.DataFrame.from_dict(results_list)
+    results_df['experience_diff'] = abs(results_df['experience'] - data['experience'])
+    results_df['salary_diff'] = abs(results_df['salary'] - data['salary'])
+    results_df['is_true_city'] = results_df['city_name'] == data['city_name']
+    results_df = results_df.sort_values(by=['is_true_city', 'experience_diff', 'salary_diff'],
+                                        ascending=[False, True, True])
+
+    results_list = (results_df
+                    .drop(columns=['experience_diff', 'is_true_city', 'salary_diff'])
+                    .to_dict('records'))
+
     return {'results': results_list}
 
 
-@router.post(path="/get_resumes")
-async def recomend_resumes(request: Request):
+@router.post(path="/get_resumes", response_model=Responce)
+async def recomend_resumes(request: Request) -> Responce:
     data = await request.json()
 
     encoder = request.app.state.encoder
     ann = request.app.state.ann
 
-    embedding = encoder.encode(data['description'], normalize_embeddings=True)
+    all_text = f"{data['vacancy']} {data['city_name']} {data['description']}"
+
+    embedding = encoder.encode(all_text, normalize_embeddings=True)
     vacancy_ids, _ = ann['resumes'].knnQuery(embedding, k=5)
     vacancy_ids = vacancy_ids.tolist()
 
     results = get_from_db(request.app.state.db_engine, vacancy_ids, Resumes)
 
-    results_list = [(result.description, result.vacancy, result.salary, result.education, result.city_name)
-                    for result in results]
+    results_list = [
+        {'employee_description': result.description,
+         'vacancy': result.vacancy,
+         'salary': result.salary,
+         'education': result.education,
+         'city_name': result.city_name,
+        }
+        for result in results
+    ]
+
+    results_df = pd.DataFrame.from_dict(results_list)
+
+    results_df['is_true_city'] = results_df['city_name'] == data['city_name']
+    results_df = results_df.sort_values(by=['is_true_city', 'salary'],
+                                        ascending=[False, True])
+
+    results_list = results_df.drop(columns=['is_true_city']).to_dict('records')
+
     return {'results': results_list}
 
 
